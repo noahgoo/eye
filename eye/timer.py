@@ -25,9 +25,9 @@ def run(test: bool = False) -> None:
     signal.signal(signal.SIGINT, handle_sigterm)
     signal.signal(signal.SIGUSR1, handle_sigusr1)
 
-    work_seconds = 5 if test else WORK_MINUTES * 60
+    work_seconds = 10 if test else WORK_MINUTES * 60
     break_seconds = 5 if test else BREAK_SECONDS
-    label = "5 seconds" if test else f"{WORK_MINUTES} minutes"
+    label = "10 seconds" if test else f"{WORK_MINUTES} minutes"
 
     try:
         first = True
