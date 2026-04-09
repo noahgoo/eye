@@ -36,7 +36,8 @@
 ### `eye start`
 
 - Starts a loop: wait 20 minutes → show overlay for 20 seconds → repeat
-- Prints status to stdout (e.g. `[eye] Next break in 20:00`, countdown updates)
+- Prints simple status messages to stdout (e.g. `[eye] Started. Break in 20 minutes.`, `[eye] Break over. Next break in 20 minutes.`)
+- No live countdown — messages only on state changes
 - The process stays in foreground; Ctrl+C also stops it
 - Writes its PID to a lockfile (e.g. `~/.eye.pid`) so `eye stop` and `eye skip` can find it
 
@@ -61,8 +62,9 @@
 - Dark background with centered text:
   - Large: "Look away — 20 feet for 20 seconds"
   - Countdown timer (20 → 0)
-  - Small: "Run `eye skip` to dismiss early"
-- The overlay is non-interactive (no buttons, no keyboard shortcuts within the window itself — skip is CLI-only)
+  - Small: "Press Space/Esc or run `eye skip` to dismiss early"
+- The overlay is non-interactive except for a single keyboard shortcut: **Space** or **Escape** dismisses it early (equivalent to `eye skip`)
+- Overlay covers **all connected monitors** simultaneously
 - After 20 seconds, overlay dismisses automatically and the next 20-minute countdown begins
 
 ---
@@ -114,11 +116,9 @@ eye = "eye:main"
 
 ```
 $ eye start
-[eye] Starting. Break in 20:00...
-[eye] Break in 19:45...
-...
-[eye] Time for a break! (20s)
-[eye] Break dismissed. Next break in 20:00...
+[eye] Started. Break in 20 minutes.
+[eye] Time for a break!
+[eye] Break over. Next break in 20 minutes.
 ```
 
 In another terminal:
