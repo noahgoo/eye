@@ -3,6 +3,7 @@ from typing import Callable
 
 import AppKit
 import Foundation
+import objc
 from PyObjCTools import AppHelper
 
 BG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.051, 0.051, 0.051, 1.0)
@@ -11,13 +12,17 @@ FG_DIM_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.533, 0.533, 0.533
 
 
 class _OverlayWindow(AppKit.NSWindow):
-    """Borderless window that can accept keyboard focus."""
+    _dismiss_callback = None
 
     def canBecomeKeyWindow(self) -> bool:
         return True
 
     def canBecomeMainWindow(self) -> bool:
         return True
+
+    def skipBreak_(self, sender) -> None:
+        if self._dismiss_callback:
+            self._dismiss_callback()
 
 
 def _label(text: str, size: float, bold: bool = False, color=None) -> AppKit.NSTextField:
@@ -35,25 +40,46 @@ def _label(text: str, size: float, bold: bool = False, color=None) -> AppKit.NST
     return field
 
 
-def _add_labels(win: AppKit.NSWindow) -> None:
+def _add_content(win: _OverlayWindow) -> None:
     content = win.contentView()
     w = content.frame().size.width
     h = content.frame().size.height
     cx, cy = w / 2, h / 2
 
-    items = [
-        _label("Look away", 52, bold=True),
-        _label("20 feet away for 20 seconds", 28),
-        _label("Press Space or Esc to dismiss early, or run `eye skip`", 13, color=FG_DIM_COLOR),
-    ]
+    # --- Labels ---
+    title = _label("Look away", 52, bold=True)
+    subtitle = _label("20 feet away for 20 seconds", 28)
 
-    gap = 20.0
-    total_height = sum(f.frame().size.height for f in items) + gap * (len(items) - 1)
+    label_gap = 20.0
+    labels_height = title.frame().size.height + label_gap + subtitle.frame().size.height
+    skip_gap = 48.0
+
+    # --- Skip button ---
+    skip_attrs = {
+        AppKit.NSForegroundColorAttributeName: FG_DIM_COLOR,
+        AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(13),
+        AppKit.NSUnderlineStyleAttributeName: AppKit.NSUnderlineStyleSingle,
+    }
+    skip_title = Foundation.NSAttributedString.alloc().initWithString_attributes_(
+        "press to skip", skip_attrs
+    )
+    skip_btn = AppKit.NSButton.alloc().initWithFrame_(Foundation.NSMakeRect(0, 0, 1, 1))
+    skip_btn.setAttributedTitle_(skip_title)
+    skip_btn.setBordered_(False)
+    skip_btn.setTarget_(win)
+    skip_btn.setAction_(b"skipBreak:")
+    skip_btn.sizeToFit()
+
+    total_height = labels_height + skip_gap + skip_btn.frame().size.height
     y = cy + total_height / 2
 
-    for field in items:
-        fw = field.frame().size.width
+    for field, gap in [
+        (title, label_gap),
+        (subtitle, skip_gap),
+        (skip_btn, 0),
+    ]:
         fh = field.frame().size.height
+        fw = field.frame().size.width
         y -= fh
         field.setFrame_(Foundation.NSMakeRect(cx - fw / 2, y, fw, fh))
         content.addSubview_(field)
@@ -84,18 +110,11 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     """Show a full-screen break overlay on all monitors. Blocks until dismissed."""
     dismissed = [False]
     windows: list[_OverlayWindow] = []
-    monitor_ref: list = [None]
 
     app = AppKit.NSApplication.sharedApplication()
-    # Accessory: no Dock icon but can receive keyboard events
-    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
 
     def dismiss() -> None:
-        """
-        Thread-safe dismiss: only calls AppHelper.stopEventLoop() which is safe
-        from any thread. All AppKit cleanup happens on the main thread after
-        runConsoleEventLoop() returns.
-        """
         if dismissed[0]:
             return
         dismissed[0] = True
@@ -103,26 +122,12 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
 
     for i, screen in enumerate(AppKit.NSScreen.screens()):
         win = _make_overlay_window(screen)
+        win._dismiss_callback = dismiss
         if i == 0:
-            _add_labels(win)
+            _add_content(win)
         win.makeKeyAndOrderFront_(None)
         windows.append(win)
 
-    def _key_handler(event):
-        if event.keyCode() in (49, 53):  # 49=space, 53=escape
-            dismiss()
-            return None
-        return event
-
-    monitor_ref[0] = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
-        AppKit.NSEventMaskKeyDown,
-        _key_handler,
-    )
-
-    app.activateIgnoringOtherApps_(True)
-    windows[0].makeKeyAndOrderFront_(None)
-
-    # Expose for SIGUSR1 handler in timer.py
     import eye.overlay as _self
     _self._active_dismiss = dismiss
 
@@ -130,18 +135,12 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     auto_timer.daemon = True
     auto_timer.start()
 
-    # runConsoleEventLoop is designed for CLI Python scripts that need Cocoa GUI.
-    # installInterrupt=False so we don't clobber the SIGINT handler in timer.py.
     AppHelper.runConsoleEventLoop(installInterrupt=False)
 
-    # --- Back on main thread; safe to do all AppKit cleanup here ---
     auto_timer.cancel()
-    if monitor_ref[0] is not None:
-        AppKit.NSEvent.removeMonitor_(monitor_ref[0])
-        monitor_ref[0] = None
     for win in windows:
         win.orderOut_(None)
-
+    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
     _self._active_dismiss = None
 
     if on_dismiss:
