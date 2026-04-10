@@ -13,13 +13,12 @@ def run(test: bool = False) -> None:
 
     def handle_sigterm(signum, frame):
         stop_event.set()
-        # If an overlay is showing, dismiss it so the main thread unblocks
-        if overlay._active_root is not None and overlay._active_dismiss is not None:
-            overlay._active_root.after(0, overlay._active_dismiss)
+        if overlay._active_dismiss is not None:
+            overlay._active_dismiss()
 
     def handle_sigusr1(signum, frame):
-        if overlay._active_root is not None and overlay._active_dismiss is not None:
-            overlay._active_root.after(0, overlay._active_dismiss)
+        if overlay._active_dismiss is not None:
+            overlay._active_dismiss()
 
     signal.signal(signal.SIGTERM, handle_sigterm)
     signal.signal(signal.SIGINT, handle_sigterm)

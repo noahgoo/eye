@@ -1,114 +1,133 @@
-import tkinter as tk
+import threading
 from typing import Callable
 
-BG = "#0d0d0d"
-FG = "#f0f0f0"
-FG_DIM = "#888888"
+import AppKit
+import Foundation
+
+BG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.051, 0.051, 0.051, 1.0)
+FG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.941, 0.941, 0.941, 1.0)
+FG_DIM_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.533, 0.533, 0.533, 1.0)
 
 
-def _get_screen_geometries() -> list[tuple[int, int, int, int]]:
-    """Return (x, y, width, height) for each connected monitor."""
-    try:
-        from AppKit import NSScreen  # type: ignore[import]
-        screens = []
-        for screen in NSScreen.screens():
-            f = screen.frame()
-            screens.append((
-                int(f.origin.x),
-                int(f.origin.y),
-                int(f.size.width),
-                int(f.size.height),
-            ))
-        return screens
-    except ImportError:
-        return None
+def _label(text: str, size: float, bold: bool = False, color=None) -> AppKit.NSTextField:
+    if color is None:
+        color = FG_COLOR
+    field = AppKit.NSTextField.labelWithString_(text)
+    font = AppKit.NSFont.boldSystemFontOfSize_(size) if bold else AppKit.NSFont.systemFontOfSize_(size)
+    field.setFont_(font)
+    field.setTextColor_(color)
+    field.setBezeled_(False)
+    field.setEditable_(False)
+    field.setSelectable_(False)
+    field.setDrawsBackground_(False)
+    field.sizeToFit()
+    return field
 
 
-def _activate_app() -> None:
-    """Bring the tkinter app to the foreground so it can receive key events."""
-    try:
-        from AppKit import NSApplication  # type: ignore[import]
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-    except ImportError:
-        pass
+def _add_labels(win: AppKit.NSWindow) -> None:
+    content = win.contentView()
+    w = content.frame().size.width
+    h = content.frame().size.height
+    cx, cy = w / 2, h / 2
+
+    items = [
+        _label("Look away", 52, bold=True),
+        _label("20 feet away for 20 seconds", 28),
+        _label("Press Space or Esc to dismiss early, or run `eye skip`", 13, color=FG_DIM_COLOR),
+    ]
+
+    gap = 20.0
+    total_height = sum(f.frame().size.height for f in items) + gap * (len(items) - 1)
+    y = cy + total_height / 2
+
+    for field in items:
+        fw = field.frame().size.width
+        fh = field.frame().size.height
+        y -= fh
+        field.setFrame_(Foundation.NSMakeRect(cx - fw / 2, y, fw, fh))
+        content.addSubview_(field)
+        y -= gap
 
 
-def _make_overlay_window(parent, x: int, y: int, w: int, h: int) -> tk.BaseWidget:
-    if parent is None:
-        win = tk.Tk()
-    else:
-        win = tk.Toplevel(parent)
-
-    win.configure(bg=BG)
-    win.overrideredirect(True)
-    win.attributes("-topmost", True)
-    win.geometry(f"{w}x{h}+{x}+{y}")
-
-    frame = tk.Frame(win, bg=BG)
-    frame.place(relx=0.5, rely=0.5, anchor="center")
-
-    tk.Label(frame, text="Look away",
-             font=("SF Pro Display", 52, "bold"), bg=BG, fg=FG).pack(pady=(0, 4))
-    tk.Label(frame, text="20 feet away for 20 seconds",
-             font=("SF Pro Display", 28), bg=BG, fg=FG).pack(pady=(0, 40))
-    tk.Label(frame, text="Press Space or Esc to dismiss early, or run `eye skip`",
-             font=("SF Pro Mono", 13), bg=BG, fg=FG_DIM).pack()
-
+def _make_overlay_window(screen: AppKit.NSScreen) -> AppKit.NSWindow:
+    win = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        screen.frame(),
+        AppKit.NSWindowStyleMaskBorderless,
+        AppKit.NSBackingStoreBuffered,
+        False,
+    )
+    win.setBackgroundColor_(BG_COLOR)
+    win.setLevel_(AppKit.NSScreenSaverWindowLevel)
+    win.setCollectionBehavior_(
+        AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+        | AppKit.NSWindowCollectionBehaviorStationary
+        | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+    )
+    win.setOpaque_(True)
+    win.setReleasedWhenClosed_(False)
     return win
 
 
 def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: int = 20) -> None:
     """Show a full-screen break overlay on all monitors. Blocks until dismissed."""
-    geometries = _get_screen_geometries()
-
-    # Build all windows; root is the Tk() instance on the first screen
-    root: tk.Tk | None = None
-    extra_wins: list[tk.Toplevel] = []
-
-    if geometries:
-        for i, (x, y, w, h) in enumerate(geometries):
-            if i == 0:
-                root = _make_overlay_window(None, x, y, w, h)
-            else:
-                extra_wins.append(_make_overlay_window(root, x, y, w, h))
-    else:
-        root = _make_overlay_window(None, 0, 0, 0, 0)
-        root.attributes("-fullscreen", True)
-
-    dismissed = False
+    dismissed = [False]
+    windows: list[AppKit.NSWindow] = []
+    monitor_ref: list = [None]
 
     def dismiss() -> None:
-        nonlocal dismissed
-        if dismissed:
-            return
-        dismissed = True
-        for win in extra_wins:
-            win.destroy()
-        root.destroy()
+        """Thread-safe: just sets the exit flag. Cleanup happens on the main thread."""
+        dismissed[0] = True
+
+    def _cleanup() -> None:
+        if monitor_ref[0] is not None:
+            AppKit.NSEvent.removeMonitor_(monitor_ref[0])
+            monitor_ref[0] = None
+        for win in windows:
+            win.orderOut_(None)
         if on_dismiss:
             on_dismiss()
 
-    root.bind_all("<space>", lambda _e: dismiss())
-    root.bind_all("<Escape>", lambda _e: dismiss())
+    app = AppKit.NSApplication.sharedApplication()
 
-    root.after(break_seconds * 1000, dismiss)
+    for i, screen in enumerate(AppKit.NSScreen.screens()):
+        win = _make_overlay_window(screen)
+        if i == 0:
+            _add_labels(win)
+        win.makeKeyAndOrderFront_(None)
+        windows.append(win)
 
-    # Activate the app and grab focus after windows are drawn
-    root.after(50, _activate_app)
-    root.after(100, root.focus_force)
+    def _key_handler(event):
+        if event.keyCode() in (49, 53):  # 49=space, 53=escape
+            dismiss()
+            return None
+        return event
+
+    monitor_ref[0] = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+        AppKit.NSEventMaskKeyDown,
+        _key_handler,
+    )
+
+    app.activateIgnoringOtherApps_(True)
 
     # Expose for SIGUSR1 handler in timer.py
     import eye.overlay as _self
-    _self._active_root = root
     _self._active_dismiss = dismiss
 
-    root.mainloop()
+    auto_timer = threading.Timer(break_seconds, dismiss)
+    auto_timer.daemon = True
+    auto_timer.start()
 
-    import eye.overlay as _self
-    _self._active_root = None
+    run_loop = Foundation.NSRunLoop.mainRunLoop()
+    while not dismissed[0]:
+        run_loop.runMode_beforeDate_(
+            Foundation.NSDefaultRunLoopMode,
+            Foundation.NSDate.dateWithTimeIntervalSinceNow_(0.1),
+        )
+
+    auto_timer.cancel()
+    _cleanup()
     _self._active_dismiss = None
 
 
-# Set during an active overlay so timer.py's signal handler can reach them
-_active_root: tk.Tk | None = None
+# Exposed for the signal handler in timer.py
 _active_dismiss: Callable[[], None] | None = None
