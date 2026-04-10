@@ -3,10 +3,21 @@ from typing import Callable
 
 import AppKit
 import Foundation
+from PyObjCTools import AppHelper
 
 BG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.051, 0.051, 0.051, 1.0)
 FG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.941, 0.941, 0.941, 1.0)
 FG_DIM_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.533, 0.533, 0.533, 1.0)
+
+
+class _OverlayWindow(AppKit.NSWindow):
+    """Borderless window that can accept keyboard focus."""
+
+    def canBecomeKeyWindow(self) -> bool:
+        return True
+
+    def canBecomeMainWindow(self) -> bool:
+        return True
 
 
 def _label(text: str, size: float, bold: bool = False, color=None) -> AppKit.NSTextField:
@@ -49,8 +60,8 @@ def _add_labels(win: AppKit.NSWindow) -> None:
         y -= gap
 
 
-def _make_overlay_window(screen: AppKit.NSScreen) -> AppKit.NSWindow:
-    win = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+def _make_overlay_window(screen: AppKit.NSScreen) -> _OverlayWindow:
+    win = _OverlayWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         screen.frame(),
         AppKit.NSWindowStyleMaskBorderless,
         AppKit.NSBackingStoreBuffered,
@@ -63,6 +74,7 @@ def _make_overlay_window(screen: AppKit.NSScreen) -> AppKit.NSWindow:
         | AppKit.NSWindowCollectionBehaviorStationary
         | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
     )
+    win.setAnimationBehavior_(AppKit.NSWindowAnimationBehaviorNone)
     win.setOpaque_(True)
     win.setReleasedWhenClosed_(False)
     return win
@@ -71,23 +83,23 @@ def _make_overlay_window(screen: AppKit.NSScreen) -> AppKit.NSWindow:
 def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: int = 20) -> None:
     """Show a full-screen break overlay on all monitors. Blocks until dismissed."""
     dismissed = [False]
-    windows: list[AppKit.NSWindow] = []
+    windows: list[_OverlayWindow] = []
     monitor_ref: list = [None]
 
-    def dismiss() -> None:
-        """Thread-safe: just sets the exit flag. Cleanup happens on the main thread."""
-        dismissed[0] = True
-
-    def _cleanup() -> None:
-        if monitor_ref[0] is not None:
-            AppKit.NSEvent.removeMonitor_(monitor_ref[0])
-            monitor_ref[0] = None
-        for win in windows:
-            win.orderOut_(None)
-        if on_dismiss:
-            on_dismiss()
-
     app = AppKit.NSApplication.sharedApplication()
+    # Accessory: no Dock icon but can receive keyboard events
+    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+
+    def dismiss() -> None:
+        """
+        Thread-safe dismiss: only calls AppHelper.stopEventLoop() which is safe
+        from any thread. All AppKit cleanup happens on the main thread after
+        runConsoleEventLoop() returns.
+        """
+        if dismissed[0]:
+            return
+        dismissed[0] = True
+        AppHelper.stopEventLoop()
 
     for i, screen in enumerate(AppKit.NSScreen.screens()):
         win = _make_overlay_window(screen)
@@ -108,6 +120,7 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     )
 
     app.activateIgnoringOtherApps_(True)
+    windows[0].makeKeyAndOrderFront_(None)
 
     # Expose for SIGUSR1 handler in timer.py
     import eye.overlay as _self
@@ -117,16 +130,22 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     auto_timer.daemon = True
     auto_timer.start()
 
-    run_loop = Foundation.NSRunLoop.mainRunLoop()
-    while not dismissed[0]:
-        run_loop.runMode_beforeDate_(
-            Foundation.NSDefaultRunLoopMode,
-            Foundation.NSDate.dateWithTimeIntervalSinceNow_(0.1),
-        )
+    # runConsoleEventLoop is designed for CLI Python scripts that need Cocoa GUI.
+    # installInterrupt=False so we don't clobber the SIGINT handler in timer.py.
+    AppHelper.runConsoleEventLoop(installInterrupt=False)
 
+    # --- Back on main thread; safe to do all AppKit cleanup here ---
     auto_timer.cancel()
-    _cleanup()
+    if monitor_ref[0] is not None:
+        AppKit.NSEvent.removeMonitor_(monitor_ref[0])
+        monitor_ref[0] = None
+    for win in windows:
+        win.orderOut_(None)
+
     _self._active_dismiss = None
+
+    if on_dismiss:
+        on_dismiss()
 
 
 # Exposed for the signal handler in timer.py
