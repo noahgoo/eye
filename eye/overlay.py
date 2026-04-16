@@ -111,7 +111,6 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     dismissed = [False]
     windows: list[_OverlayWindow] = []
     auto_timer: list[threading.Timer | None] = [None]
-    key_monitor = None
 
     app = AppKit.NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
@@ -125,8 +124,6 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
         dismissed[0] = True
         if auto_timer[0]:
             auto_timer[0].cancel()
-        if key_monitor is not None:
-            AppKit.NSEvent.removeMonitor_(key_monitor)
         for win in windows:
             win.orderOut_(None)
         app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
@@ -141,11 +138,6 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
             _add_content(win)
         win.makeKeyAndOrderFront_(None)
         windows.append(win)
-
-    key_monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
-        AppKit.NSEventMaskKeyDown,
-        lambda event: dismiss() or event,
-    )
 
     _self._active_dismiss = dismiss
 
