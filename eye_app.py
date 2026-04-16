@@ -117,6 +117,10 @@ class _EyeDelegate(AppKit.NSObject):  # type: ignore[attr-defined]
         self._update_menu(running=False)
 
     def _update_menu(self, running: bool) -> None:
+        symbol = "eye" if running else "eye.half.closed"
+        image = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, "Eye")
+        image.setTemplate_(True)
+        self._status_item.button().setImage_(image)
         self._status_label.setTitle_("Eye: Running" if running else "Eye: Stopped")
         self._countdown_label.setHidden_(not running)
         self._start_item.setEnabled_(not running)
