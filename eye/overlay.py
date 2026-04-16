@@ -106,22 +106,33 @@ def _make_overlay_window(screen: AppKit.NSScreen) -> _OverlayWindow:
 
 
 def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: int = 20) -> None:
-    """Show a full-screen break overlay on all monitors. Blocks until dismissed."""
+    """Show a full-screen break overlay on all monitors. Returns immediately;
+    cleanup and on_dismiss() fire when the overlay is dismissed."""
     dismissed = [False]
     windows: list[_OverlayWindow] = []
+    auto_timer: list[threading.Timer | None] = [None]
     key_monitor = None
 
     app = AppKit.NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
     app.activateIgnoringOtherApps_(True)
 
+    import eye.overlay as _self
+
     def dismiss() -> None:
         if dismissed[0]:
             return
         dismissed[0] = True
-        # callAfter ensures stopModal runs on the main thread — required by AppKit.
-        # Safe from background timer thread, button click, key press, or signal.
-        AppHelper.callAfter(app.stopModal)
+        if auto_timer[0]:
+            auto_timer[0].cancel()
+        if key_monitor is not None:
+            AppKit.NSEvent.removeMonitor_(key_monitor)
+        for win in windows:
+            win.orderOut_(None)
+        app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+        _self._active_dismiss = None
+        if on_dismiss:
+            on_dismiss()
 
     for i, screen in enumerate(AppKit.NSScreen.screens()):
         win = _make_overlay_window(screen)
@@ -136,28 +147,15 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
         lambda event: dismiss() or event,
     )
 
-    import eye.overlay as _self
     _self._active_dismiss = dismiss
 
-    auto_timer = threading.Timer(break_seconds, dismiss)
-    auto_timer.daemon = True
-    auto_timer.start()
+    # Auto-dismiss: dispatch to main thread so AppKit calls stay on main thread.
+    auto_timer[0] = threading.Timer(break_seconds, lambda: AppHelper.callAfter(dismiss))
+    auto_timer[0].daemon = True
+    auto_timer[0].start()
 
-    # runModalForWindow_ blocks within the existing event loop (unlike app.run()
-    # which would stop the outer NSApplicationMain loop when stopped).
-    # stopModal() only ends this modal session — outer loop is unaffected.
-    app.runModalForWindow_(windows[0])
-
-    auto_timer.cancel()
-    if key_monitor is not None:
-        AppKit.NSEvent.removeMonitor_(key_monitor)
-    for win in windows:
-        win.orderOut_(None)
-    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
-    _self._active_dismiss = None
-
-    if on_dismiss:
-        on_dismiss()
+    # Non-blocking: the outer NSApp.run() (from runEventLoop) handles all events.
+    # No nested run loop needed — avoids modal session restricting dock coverage.
 
 
 # Exposed for the signal handler in timer.py
