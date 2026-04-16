@@ -3,7 +3,6 @@ from typing import Callable
 
 import AppKit
 import Foundation
-import objc
 from PyObjCTools import AppHelper
 
 BG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.051, 0.051, 0.051, 1.0)
@@ -110,15 +109,19 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     """Show a full-screen break overlay on all monitors. Blocks until dismissed."""
     dismissed = [False]
     windows: list[_OverlayWindow] = []
+    key_monitor = None
 
     app = AppKit.NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
+    app.activateIgnoringOtherApps_(True)
 
     def dismiss() -> None:
         if dismissed[0]:
             return
         dismissed[0] = True
-        AppHelper.stopEventLoop()
+        # callAfter ensures stopModal runs on the main thread — required by AppKit.
+        # Safe from background timer thread, button click, key press, or signal.
+        AppHelper.callAfter(app.stopModal)
 
     for i, screen in enumerate(AppKit.NSScreen.screens()):
         win = _make_overlay_window(screen)
@@ -128,6 +131,11 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
         win.makeKeyAndOrderFront_(None)
         windows.append(win)
 
+    key_monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+        AppKit.NSEventMaskKeyDown,
+        lambda event: dismiss() or event,
+    )
+
     import eye.overlay as _self
     _self._active_dismiss = dismiss
 
@@ -135,9 +143,14 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     auto_timer.daemon = True
     auto_timer.start()
 
-    AppHelper.runConsoleEventLoop(installInterrupt=False)
+    # runModalForWindow_ blocks within the existing event loop (unlike app.run()
+    # which would stop the outer NSApplicationMain loop when stopped).
+    # stopModal() only ends this modal session — outer loop is unaffected.
+    app.runModalForWindow_(windows[0])
 
     auto_timer.cancel()
+    if key_monitor is not None:
+        AppKit.NSEvent.removeMonitor_(key_monitor)
     for win in windows:
         win.orderOut_(None)
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
