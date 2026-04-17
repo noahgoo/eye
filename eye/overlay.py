@@ -94,10 +94,13 @@ def _make_overlay_window(screen: AppKit.NSScreen) -> _OverlayWindow:
     )
     win.setBackgroundColor_(BG_COLOR)
     win.setLevel_(AppKit.NSScreenSaverWindowLevel)
+    # CanJoinAllSpaces: render in every Space.
+    # FullScreenAuxiliary: required to appear inside another app's fullscreen Space;
+    # CanJoinAllSpaces alone skips fullscreen Spaces owned by other apps.
     win.setCollectionBehavior_(
         AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
-        | AppKit.NSWindowCollectionBehaviorStationary
         | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+        | AppKit.NSWindowCollectionBehaviorIgnoresCycle
     )
     win.setAnimationBehavior_(AppKit.NSWindowAnimationBehaviorNone)
     win.setOpaque_(True)
@@ -112,10 +115,6 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
     windows: list[_OverlayWindow] = []
     auto_timer: list[threading.Timer | None] = [None]
 
-    app = AppKit.NSApplication.sharedApplication()
-    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
-    app.activateIgnoringOtherApps_(True)
-
     import eye.overlay as _self
 
     def dismiss() -> None:
@@ -126,28 +125,22 @@ def show_overlay(on_dismiss: Callable[[], None] | None = None, break_seconds: in
             auto_timer[0].cancel()
         for win in windows:
             win.orderOut_(None)
-        app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
         _self._active_dismiss = None
         if on_dismiss:
             on_dismiss()
 
-    for i, screen in enumerate(AppKit.NSScreen.screens()):
+    for screen in AppKit.NSScreen.screens():
         win = _make_overlay_window(screen)
         win._dismiss_callback = dismiss
-        if i == 0:
-            _add_content(win)
-        win.makeKeyAndOrderFront_(None)
+        _add_content(win)
+        win.orderFrontRegardless()
         windows.append(win)
 
     _self._active_dismiss = dismiss
 
-    # Auto-dismiss: dispatch to main thread so AppKit calls stay on main thread.
     auto_timer[0] = threading.Timer(break_seconds, lambda: AppHelper.callAfter(dismiss))
     auto_timer[0].daemon = True
     auto_timer[0].start()
-
-    # Non-blocking: the outer NSApp.run() (from runEventLoop) handles all events.
-    # No nested run loop needed — avoids modal session restricting dock coverage.
 
 
 # Exposed for the signal handler in timer.py
