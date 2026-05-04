@@ -17,7 +17,7 @@ from setuptools import setup
 APP = ["eye_app.py"]
 OPTIONS = {
     "argv_emulation": False,
-    "packages": ["eye"],
+    "packages": ["eye", "Quartz"],
     "plist": {
         "CFBundleName": "Eye",
         "CFBundleDisplayName": "Eye",
