@@ -6,8 +6,6 @@ import Foundation
 from PyObjCTools import AppHelper
 
 BG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.051, 0.051, 0.051, 1.0)
-FG_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.941, 0.941, 0.941, 1.0)
-FG_DIM_COLOR = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.533, 0.533, 0.533, 1.0)
 
 
 class _OverlayWindow(AppKit.NSWindow):
@@ -24,13 +22,18 @@ class _OverlayWindow(AppKit.NSWindow):
             self._dismiss_callback()
 
 
-def _label(text: str, size: float, bold: bool = False, color=None) -> AppKit.NSTextField:
-    if color is None:
-        color = FG_COLOR
-    field = AppKit.NSTextField.labelWithString_(text)
-    font = AppKit.NSFont.boldSystemFontOfSize_(size) if bold else AppKit.NSFont.systemFontOfSize_(size)
-    field.setFont_(font)
-    field.setTextColor_(color)
+def _rounded_font(size: float, weight: float) -> AppKit.NSFont:
+    base = AppKit.NSFont.systemFontOfSize_weight_(size, weight)
+    desc = base.fontDescriptor().fontDescriptorWithDesign_(
+        AppKit.NSFontDescriptorSystemDesignRounded
+    )
+    font = AppKit.NSFont.fontWithDescriptor_size_(desc, size)
+    return font if font is not None else base
+
+
+def _attributed_label(attr: Foundation.NSAttributedString) -> AppKit.NSTextField:
+    field = AppKit.NSTextField.alloc().initWithFrame_(Foundation.NSMakeRect(0, 0, 1, 1))
+    field.setAttributedStringValue_(attr)
     field.setBezeled_(False)
     field.setEditable_(False)
     field.setSelectable_(False)
@@ -45,18 +48,39 @@ def _add_content(win: _OverlayWindow) -> None:
     h = content.frame().size.height
     cx, cy = w / 2, h / 2
 
-    # --- Labels ---
-    title = _label("Look away", 52, bold=True)
-    subtitle = _label("20 feet away for 20 seconds", 28)
+    title_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.90, 0.89, 0.86, 1.0)
+    subtitle_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.62, 0.62, 0.60, 1.0)
+    skip_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.48, 0.48, 0.46, 1.0)
 
-    label_gap = 20.0
-    labels_height = title.frame().size.height + label_gap + subtitle.frame().size.height
-    skip_gap = 48.0
+    title_font = _rounded_font(50.0, AppKit.NSFontWeightMedium)
+    subtitle_font = _rounded_font(24.0, AppKit.NSFontWeightRegular)
+    skip_font = _rounded_font(13.0, AppKit.NSFontWeightRegular)
 
-    # --- Skip button ---
+    title_attr = Foundation.NSMutableAttributedString.alloc().initWithString_attributes_(
+        "Look away",
+        {
+            AppKit.NSFontAttributeName: title_font,
+            AppKit.NSForegroundColorAttributeName: title_color,
+        },
+    )
+    title = _attributed_label(title_attr)
+
+    subtitle_attr = Foundation.NSMutableAttributedString.alloc().initWithString_attributes_(
+        "20 feet away for 20 seconds",
+        {
+            AppKit.NSFontAttributeName: subtitle_font,
+            AppKit.NSForegroundColorAttributeName: subtitle_color,
+            AppKit.NSKernAttributeName: 0.45,
+        },
+    )
+    subtitle = _attributed_label(subtitle_attr)
+
+    label_gap = 22.0
+    subtitle_to_skip_gap = 56.0
+
     skip_attrs = {
-        AppKit.NSForegroundColorAttributeName: FG_DIM_COLOR,
-        AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(13),
+        AppKit.NSForegroundColorAttributeName: skip_color,
+        AppKit.NSFontAttributeName: skip_font,
         AppKit.NSUnderlineStyleAttributeName: AppKit.NSUnderlineStyleSingle,
     }
     skip_title = Foundation.NSAttributedString.alloc().initWithString_attributes_(
@@ -69,13 +93,14 @@ def _add_content(win: _OverlayWindow) -> None:
     skip_btn.setAction_(b"skipBreak:")
     skip_btn.sizeToFit()
 
-    total_height = labels_height + skip_gap + skip_btn.frame().size.height
+    labels_height = title.frame().size.height + label_gap + subtitle.frame().size.height
+    total_height = labels_height + subtitle_to_skip_gap + skip_btn.frame().size.height
     y = cy + total_height / 2
 
     for field, gap in [
         (title, label_gap),
-        (subtitle, skip_gap),
-        (skip_btn, 0),
+        (subtitle, subtitle_to_skip_gap),
+        (skip_btn, 0.0),
     ]:
         fh = field.frame().size.height
         fw = field.frame().size.width

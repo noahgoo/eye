@@ -36,5 +36,6 @@ setup(
     name="Eye",
     app=APP,
     data_files=[],
+    packages=["eye"],
     options={"py2app": OPTIONS},
 )
