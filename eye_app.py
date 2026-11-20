@@ -3,6 +3,7 @@ import signal
 import sys
 import threading
 import time
+from dataclasses import dataclass
 
 import AppKit  # type: ignore[attr-defined]
 import Foundation  # type: ignore[attr-defined]
@@ -13,6 +14,36 @@ import eye.overlay as overlay
 from eye.pid import read_pid, write_pid, remove_pid
 
 IDLE_THRESHOLD = 5 * 60  # seconds of inactivity before pausing timer
+
+
+@dataclass(frozen=True)
+class Mode:
+    name: str  # shown in the menu status ("Eye: <name>")
+    work_seconds: int
+    break_seconds: int
+    theme: overlay.OverlayTheme
+
+
+def _make_mode(kind: str, test: bool) -> Mode:
+    if kind == "pomodoro":
+        return Mode(
+            "Pomodoro",
+            15 if test else 25 * 60,
+            10 if test else 5 * 60,
+            overlay.POMODORO_THEME,
+        )
+    return Mode(
+        "Running",
+        15 if test else 20 * 60,
+        10 if test else 20,
+        overlay.EYE_THEME,
+    )
+
+
+def _fmt_duration(seconds: int) -> str:
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds // 60} minutes"
+    return f"{seconds} seconds"
 
 
 def _idle_seconds() -> float:
@@ -36,7 +67,7 @@ def _run_timer(
     stop_event: threading.Event,
     sleep_event: threading.Event,
     reset_event: threading.Event,
-    test: bool,
+    mode: Mode,
     on_cycle_start,
     on_pause,
     on_resume,
@@ -44,9 +75,9 @@ def _run_timer(
     remaining_ref: list,
 ) -> None:
     """Break loop — runs on a background thread. Pauses during sleep or inactivity."""
-    work_seconds = 15 if test else 20 * 60
-    break_seconds = 10 if test else 20
-    label = "15 seconds" if test else "20 minutes"
+    work_seconds = mode.work_seconds
+    break_seconds = mode.break_seconds
+    label = _fmt_duration(work_seconds)
 
     first = True
     while not stop_event.is_set():
@@ -88,7 +119,7 @@ def _run_timer(
         remaining_ref[0] = None  # on break
         print("[eye] Time for a break!", flush=True)
         done = threading.Event()
-        AppHelper.callAfter(overlay.show_overlay, done.set, break_seconds)
+        AppHelper.callAfter(overlay.show_overlay, done.set, break_seconds, mode.theme)
         done.wait()
 
     remaining_ref[0] = None
@@ -96,7 +127,7 @@ def _run_timer(
     AppHelper.callAfter(on_done)
 
 
-def _start_timer(delegate, test: bool) -> None:
+def _start_timer(delegate, mode: Mode) -> None:
     if delegate._timer_thread and delegate._timer_thread.is_alive():
         return
     delegate._stop_event = threading.Event()
@@ -109,7 +140,7 @@ def _start_timer(delegate, test: bool) -> None:
             delegate._stop_event,
             delegate._sleep_event,
             delegate._reset_event,
-            test,
+            mode,
             delegate._on_cycle_start,
             lambda: _on_pause_cb(delegate),
             lambda: _on_resume_cb(delegate),
@@ -125,7 +156,7 @@ def _start_timer(delegate, test: bool) -> None:
     Foundation.NSRunLoop.mainRunLoop().addTimer_forMode_(
         delegate._tick_timer, Foundation.NSRunLoopCommonModes
     )
-    delegate._update_menu(running=True)
+    delegate._update_menu(running=True, mode_name=mode.name)
 
 
 class _EyeDelegate(AppKit.NSObject):  # type: ignore[attr-defined]
@@ -213,6 +244,18 @@ class _EyeDelegate(AppKit.NSObject):  # type: ignore[attr-defined]
         self._start_test_item.setTarget_(self)
         menu.addItem_(self._start_test_item)
 
+        self._start_pomodoro_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Start Pomodoro", b"startPomodoro:", ""
+        )
+        self._start_pomodoro_item.setTarget_(self)
+        menu.addItem_(self._start_pomodoro_item)
+
+        self._start_pomodoro_test_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Start Pomodoro (Test Mode)", b"startPomodoroTest:", ""
+        )
+        self._start_pomodoro_test_item.setTarget_(self)
+        menu.addItem_(self._start_pomodoro_test_item)
+
         self._stop_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Stop", b"stopTimer:", ""
         )
@@ -230,15 +273,17 @@ class _EyeDelegate(AppKit.NSObject):  # type: ignore[attr-defined]
         self._status_item.setMenu_(menu)
         self._update_menu(running=False)
 
-    def _update_menu(self, running: bool) -> None:
+    def _update_menu(self, running: bool, mode_name: str = "Running") -> None:
         symbol = "eye" if running else "eye.half.closed"
         image = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, "Eye")
         image.setTemplate_(True)
         self._status_item.button().setImage_(image)
-        self._status_label.setTitle_("Eye: Running" if running else "Eye: Stopped")
+        self._status_label.setTitle_(f"Eye: {mode_name}" if running else "Eye: Stopped")
         self._countdown_label.setHidden_(not running)
         self._start_item.setEnabled_(not running)
         self._start_test_item.setEnabled_(not running)
+        self._start_pomodoro_item.setEnabled_(not running)
+        self._start_pomodoro_test_item.setEnabled_(not running)
         self._stop_item.setEnabled_(running)
         if not running:
             if self._tick_timer:
@@ -272,10 +317,16 @@ class _EyeDelegate(AppKit.NSObject):  # type: ignore[attr-defined]
         self._paused_status = None
 
     def startTimer_(self, sender) -> None:
-        _start_timer(self, test=False)
+        _start_timer(self, _make_mode("eye", test=False))
 
     def startTimerTest_(self, sender) -> None:
-        _start_timer(self, test=True)
+        _start_timer(self, _make_mode("eye", test=True))
+
+    def startPomodoro_(self, sender) -> None:
+        _start_timer(self, _make_mode("pomodoro", test=False))
+
+    def startPomodoroTest_(self, sender) -> None:
+        _start_timer(self, _make_mode("pomodoro", test=True))
 
     def stopTimer_(self, sender) -> None:
         if self._stop_event:
